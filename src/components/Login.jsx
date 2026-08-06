@@ -1,12 +1,10 @@
 // src/components/Login.jsx
 import React, { useState } from 'react';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
-import { auth, db } from '../firebase';
+import { authService } from '../api';
 import './Login.css';
 
 export default function Login({ onLoginSuccess }) {
-  const [role, setRole] = useState('student');
+  const [role, setRole] = useState('student'); // 'student' | 'recruiter' | 'tpo'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -15,6 +13,13 @@ export default function Login({ onLoginSuccess }) {
   const [errors, setErrors] = useState({});
   const [status, setStatus] = useState('idle'); // 'idle' | 'loading' | 'success' | 'error'
   const [generalError, setGeneralError] = useState('');
+
+  // Additional fields for Sign Up
+  const [name, setName] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [cgpa, setCgpa] = useState('');
+  const [branch, setBranch] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
 
   // Validate form fields
   const validate = () => {
@@ -31,29 +36,30 @@ export default function Login({ onLoginSuccess }) {
       tempErrors.password = 'Password must be at least 6 characters';
     }
 
+    if (isSignUp) {
+      if (!name) {
+        tempErrors.name = 'Full name is required';
+      }
+      if (role === 'recruiter' && !companyName) {
+        tempErrors.companyName = 'Company name is required';
+      }
+      if (role === 'student') {
+        if (!branch) {
+          tempErrors.branch = 'Branch is required';
+        }
+        if (!cgpa) {
+          tempErrors.cgpa = 'CGPA is required';
+        } else {
+          const cgpaNum = parseFloat(cgpa);
+          if (isNaN(cgpaNum) || cgpaNum < 0 || cgpaNum > 10) {
+            tempErrors.cgpa = 'CGPA must be between 0.0 and 10.0';
+          }
+        }
+      }
+    }
+
     setErrors(tempErrors);
     return Object.keys(tempErrors).length === 0;
-  };
-
-  const getFriendlyErrorMessage = (code) => {
-    switch (code) {
-      case 'auth/invalid-credential':
-        return 'Invalid email or password. Please try again.';
-      case 'auth/email-already-in-use':
-        return 'This email address is already registered.';
-      case 'auth/weak-password':
-        return 'The password is too weak. It must be at least 6 characters.';
-      case 'auth/invalid-email':
-        return 'Please enter a valid email address.';
-      case 'auth/user-not-found':
-        return 'No account found with this email.';
-      case 'auth/wrong-password':
-        return 'Incorrect password. Please try again.';
-      case 'auth/too-many-requests':
-        return 'Too many failed login attempts. Please try again later.';
-      default:
-        return 'An error occurred. Please try again.';
-    }
   };
 
   const handleSubmit = async (e) => {
@@ -64,37 +70,60 @@ export default function Login({ onLoginSuccess }) {
 
     setStatus('loading');
 
+    // Map React role to Spring Boot Enum role
+    let backendRole = 'STUDENT';
+    if (role === 'recruiter') backendRole = 'RECRUITER';
+    if (role === 'tpo') backendRole = 'ADMIN';
+
     try {
       if (isSignUp) {
-        // Sign Up Flow
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
+        // Registration Flow
+        const signupData = {
+          email,
+          password,
+          role: backendRole,
+          name,
+          companyName: role === 'recruiter' ? companyName : null,
+          cgpa: role === 'student' ? parseFloat(cgpa) : null,
+          branch: role === 'student' ? branch : null,
+          phoneNumber: role === 'student' ? phoneNumber : null,
+        };
+
+        await authService.register(signupData);
         
-        // Write the profile data to Firestore
-        await setDoc(doc(db, "users", user.uid), {
-          uid: user.uid,
-          email: email,
-          role: role,
-          createdAt: new Date().toISOString()
-        });
+        // After successful sign up, auto log in
+        const authData = await authService.login(email, password);
+        setStatus('success');
+        setTimeout(() => {
+          if (onLoginSuccess) {
+            onLoginSuccess(authData);
+          }
+        }, 1000);
       } else {
         // Sign In Flow
-        await signInWithEmailAndPassword(auth, email, password);
-      }
-      
-      // Store user role locally as backup
-      localStorage.setItem('placement-role', role);
-      
-      setStatus('success');
-      setTimeout(() => {
-        if (onLoginSuccess) {
-          onLoginSuccess({ email, role });
+        const authData = await authService.login(email, password);
+        
+        // Check if role matches selected role (Optional validation)
+        const expectedRole = backendRole;
+        if (authData.role !== expectedRole) {
+          authService.logout();
+          setStatus('error');
+          setGeneralError(`Account exists but does not match selected role: ${role.toUpperCase()}`);
+          return;
         }
-      }, 1000);
+
+        setStatus('success');
+        setTimeout(() => {
+          if (onLoginSuccess) {
+            onLoginSuccess(authData);
+          }
+        }, 1000);
+      }
     } catch (error) {
-      console.error("Firebase auth/firestore error:", error);
+      console.error("Authentication error:", error);
       setStatus('error');
-      setGeneralError(getFriendlyErrorMessage(error.code));
+      const message = error.response?.data?.message || 'Invalid email or password. Please try again.';
+      setGeneralError(message);
     }
   };
 
@@ -170,21 +199,21 @@ export default function Login({ onLoginSuccess }) {
                   <button
                     type="button"
                     className={`role-tab ${role === 'student' ? 'active' : ''}`}
-                    onClick={() => setRole('student')}
+                    onClick={() => { setRole('student'); setErrors({}); }}
                   >
                     Student
                   </button>
                   <button
                     type="button"
                     className={`role-tab ${role === 'recruiter' ? 'active' : ''}`}
-                    onClick={() => setRole('recruiter')}
+                    onClick={() => { setRole('recruiter'); setErrors({}); }}
                   >
                     Recruiter
                   </button>
                   <button
                     type="button"
                     className={`role-tab ${role === 'tpo' ? 'active' : ''}`}
-                    onClick={() => setRole('tpo')}
+                    onClick={() => { setRole('tpo'); setErrors({}); }}
                   >
                     TPO / Admin
                   </button>
@@ -202,6 +231,83 @@ export default function Login({ onLoginSuccess }) {
                 )}
 
                 <form onSubmit={handleSubmit} className="form-body" noValidate>
+                  {/* Common Fields for Sign Up */}
+                  {isSignUp && (
+                    <div className="form-group">
+                      <label className="form-label" htmlFor="name">Full Name *</label>
+                      <input
+                        type="text"
+                        id="name"
+                        className={`login-input ${errors.name ? 'error' : ''}`}
+                        placeholder="John Doe"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                      />
+                      {errors.name && <span className="error-text">{errors.name}</span>}
+                    </div>
+                  )}
+
+                  {/* Recruiter-specific Field for Sign Up */}
+                  {isSignUp && role === 'recruiter' && (
+                    <div className="form-group">
+                      <label className="form-label" htmlFor="companyName">Company Name *</label>
+                      <input
+                        type="text"
+                        id="companyName"
+                        className={`login-input ${errors.companyName ? 'error' : ''}`}
+                        placeholder="Google, Microsoft, etc."
+                        value={companyName}
+                        onChange={(e) => setCompanyName(e.target.value)}
+                      />
+                      {errors.companyName && <span className="error-text">{errors.companyName}</span>}
+                    </div>
+                  )}
+
+                  {/* Student-specific Fields for Sign Up */}
+                  {isSignUp && role === 'student' && (
+                    <>
+                      <div className="form-group">
+                        <label className="form-label" htmlFor="branch">Branch / Major *</label>
+                        <input
+                          type="text"
+                          id="branch"
+                          className={`login-input ${errors.branch ? 'error' : ''}`}
+                          placeholder="e.g. Computer Science Engineering"
+                          value={branch}
+                          onChange={(e) => setBranch(e.target.value)}
+                        />
+                        {errors.branch && <span className="error-text">{errors.branch}</span>}
+                      </div>
+
+                      <div className="form-grid-inputs" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                        <div className="form-group">
+                          <label className="form-label" htmlFor="cgpa">CGPA *</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            id="cgpa"
+                            className={`login-input ${errors.cgpa ? 'error' : ''}`}
+                            placeholder="e.g. 8.5"
+                            value={cgpa}
+                            onChange={(e) => setCgpa(e.target.value)}
+                          />
+                          {errors.cgpa && <span className="error-text">{errors.cgpa}</span>}
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label" htmlFor="phoneNumber">Phone Number</label>
+                          <input
+                            type="text"
+                            id="phoneNumber"
+                            className="login-input"
+                            placeholder="+91-XXXXXXXXXX"
+                            value={phoneNumber}
+                            onChange={(e) => setPhoneNumber(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
+
                   {/* Email Input */}
                   <div className="form-group">
                     <label className="form-label" htmlFor="email">Email Address</label>
@@ -227,11 +333,6 @@ export default function Login({ onLoginSuccess }) {
                     </div>
                     {errors.email && (
                       <span className="error-text">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <circle cx="12" cy="12" r="10"/>
-                          <line x1="12" y1="8" x2="12" y2="12"/>
-                          <line x1="12" y1="16" x2="12.01" y2="16"/>
-                        </svg>
                         {errors.email}
                       </span>
                     )}
@@ -280,11 +381,6 @@ export default function Login({ onLoginSuccess }) {
                     </div>
                     {errors.password && (
                       <span className="error-text">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <circle cx="12" cy="12" r="10"/>
-                          <line x1="12" y1="8" x2="12" y2="12"/>
-                          <line x1="12" y1="16" x2="12.01" y2="16"/>
-                        </svg>
                         {errors.password}
                       </span>
                     )}
@@ -303,7 +399,7 @@ export default function Login({ onLoginSuccess }) {
                         />
                         Remember me
                       </label>
-                      <a href="#forgot" className="forgot-link" onClick={(e) => { e.preventDefault(); alert('Reset password flow triggered (mocked).'); }}>
+                      <a href="#forgot" className="forgot-link" onClick={(e) => { e.preventDefault(); alert('Reset password flow triggered. Please contact admin.'); }}>
                         Forgot Password?
                       </a>
                     </div>
@@ -331,22 +427,24 @@ export default function Login({ onLoginSuccess }) {
                   </button>
                 </form>
 
-                <div className="form-footer">
-                  <span>{isSignUp ? 'Already have an account?' : "Don't have an account?"}</span>
-                  <a 
-                    href="#toggle" 
-                    className="signup-link" 
-                    onClick={(e) => { 
-                      e.preventDefault(); 
-                      setIsSignUp(!isSignUp);
-                      setGeneralError('');
-                      setErrors({});
-                    }}
-                    disabled={status === 'loading'}
-                  >
-                    {isSignUp ? 'Sign In' : 'Create Account'}
-                  </a>
-                </div>
+                {role !== 'tpo' && (
+                  <div className="form-footer">
+                    <span>{isSignUp ? 'Already have an account?' : "Don't have an account?"}</span>
+                    <a 
+                      href="#toggle" 
+                      className="signup-link" 
+                      onClick={(e) => { 
+                        e.preventDefault(); 
+                        setIsSignUp(!isSignUp);
+                        setGeneralError('');
+                        setErrors({});
+                      }}
+                      disabled={status === 'loading'}
+                    >
+                      {isSignUp ? 'Sign In' : 'Create Account'}
+                    </a>
+                  </div>
+                )}
               </>
             )}
           </div>
